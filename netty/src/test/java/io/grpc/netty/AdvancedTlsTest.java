@@ -22,10 +22,12 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
 
+import com.google.common.base.Strings;
 import com.google.common.util.concurrent.MoreExecutors;
 import io.grpc.ChannelCredentials;
 import io.grpc.Grpc;
 import io.grpc.ManagedChannel;
+import io.grpc.Metadata;
 import io.grpc.Server;
 import io.grpc.ServerCredentials;
 import io.grpc.StatusRuntimeException;
@@ -33,6 +35,7 @@ import io.grpc.TlsChannelCredentials;
 import io.grpc.TlsServerCredentials;
 import io.grpc.TlsServerCredentials.ClientAuth;
 import io.grpc.internal.testing.TestUtils;
+import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
 import io.grpc.testing.TlsTesting;
 import io.grpc.testing.protobuf.SimpleRequest;
@@ -136,6 +139,44 @@ public class AdvancedTlsTest {
     try {
       SimpleServiceGrpc.SimpleServiceBlockingStub client =
           SimpleServiceGrpc.newBlockingStub(channel);
+
+      // Send an actual request, via the full GRPC & network stack, and check that a proper
+      // response comes back.
+      client.unaryRpc(SimpleRequest.getDefaultInstance());
+    } catch (StatusRuntimeException e) {
+      e.printStackTrace();
+      fail("Failed to make a connection");
+      e.printStackTrace();
+    }
+  }
+
+  @Test
+  public void basicMutualTlsTestWithLargeHeader() throws Exception {
+    // Create & start a server.
+    ServerCredentials serverCredentials = TlsServerCredentials.newBuilder()
+            .keyManager(serverCert0File, serverKey0File).trustManager(caCertFile)
+            .clientAuth(ClientAuth.REQUIRE).build();
+    server = Grpc.newServerBuilderForPort(0, serverCredentials)
+            .maxInboundMetadataSize(262144)
+            .addService(new SimpleServiceImpl())
+            .build().start();
+    // Create a client to connect.
+    ChannelCredentials channelCredentials = TlsChannelCredentials.newBuilder()
+            .keyManager(clientCert0File, clientKey0File).trustManager(caCertFile).build();
+    channel = Grpc.newChannelBuilderForAddress("localhost", server.getPort(), channelCredentials)
+            .overrideAuthority("foo.test.google.com.au")
+            .maxInboundMetadataSize(262144)
+            .build();
+    // Start the connection.
+    try {
+      Metadata metadata = new Metadata();
+      String largeString = Strings.repeat("a", 200000);
+      metadata.put(Metadata.Key.of("large-header", Metadata.ASCII_STRING_MARSHALLER), largeString);
+
+      SimpleServiceGrpc.SimpleServiceBlockingStub client =
+              SimpleServiceGrpc.newBlockingStub(channel)
+                      .withInterceptors(MetadataUtils.newAttachHeadersInterceptor(metadata));
+
       // Send an actual request, via the full GRPC & network stack, and check that a proper
       // response comes back.
       client.unaryRpc(SimpleRequest.getDefaultInstance());
